@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# enemy bootstrapper (installed onto your PATH as `enemy`).
+#
+# Keeps a local clone of github.com/ogroves/setup up to date, then hands off to
+# the real script inside that clone. This means anything pushed to the remote is
+# picked up automatically on the next run.
+#
+set -euo pipefail
+
+REMOTE="https://github.com/ogroves/setup.git"
+CACHE_DIR="${ENEMY_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/enemy}"
+
+log()  { printf '%s\n' "$*" >&2; }
+
+ensure_clone() {
+    if [ -d "$CACHE_DIR/.git" ]; then
+        return 0
+    fi
+    log "Fetching scaffold from $REMOTE ..."
+    mkdir -p "$(dirname "$CACHE_DIR")"
+    if ! git clone --depth 1 "$REMOTE" "$CACHE_DIR" >/dev/null 2>&1; then
+        log "✗ Unable to clone $REMOTE (network/auth issue) and no local cache exists."
+        exit 1
+    fi
+}
+
+self_update() {
+    git -C "$CACHE_DIR" fetch --quiet origin 2>/dev/null || {
+        log "! Could not reach remote; using the cached scaffold."
+        return 0
+    }
+    local branch
+    branch="$(git -C "$CACHE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    git -C "$CACHE_DIR" reset --hard --quiet "origin/$branch" 2>/dev/null \
+        || log "! Could not fast-forward the cached scaffold; using what's on disk."
+}
+
+command -v git >/dev/null 2>&1 || { log "✗ git is required."; exit 1; }
+
+ensure_clone
+
+# Decide whether to refresh from the remote for this invocation.
+want_update=1
+for arg in "$@"; do
+    [ "$arg" = "--no-update" ] && want_update=0
+done
+case "${1:-}" in
+    -h|--help|help|-v|--version|prepare|"") want_update=0 ;;
+esac
+
+[ "$want_update" -eq 1 ] && self_update
+
+exec "$CACHE_DIR/bin/enemy" "$@"

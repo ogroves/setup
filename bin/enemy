@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+#
+# enemy - opinionated Laravel + Vue project scaffolder
+#
+# Runs `laravel new` and then applies a delta layer (stubs, dependencies and a
+# few idempotent edits) on top of whatever the current Laravel skeleton is, so
+# it keeps working across future Laravel releases.
+#
+set -euo pipefail
+
+# --- Locate the repo (this script lives in <repo>/bin/enemy) -----------------
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -P "$BIN_DIR/.." >/dev/null 2>&1 && pwd)"
+STUBS_DIR="$REPO_ROOT/stubs"
+CONFIG_FILE="$REPO_ROOT/config/dependencies.sh"
+
+# --- Colors (only when attached to a terminal) -------------------------------
+if [ -t 1 ]; then
+    BOLD="$(printf '\033[1m')"; DIM="$(printf '\033[2m')"; RESET="$(printf '\033[0m')"
+    CYAN="$(printf '\033[36m')"; GREEN="$(printf '\033[32m')"
+    YELLOW="$(printf '\033[33m')"; RED="$(printf '\033[31m')"
+else
+    BOLD=""; DIM=""; RESET=""; CYAN=""; GREEN=""; YELLOW=""; RED=""
+fi
+
+info()  { printf '%s\n' "$*"; }
+warn()  { printf '%s\n' "${YELLOW}! ${*}${RESET}" >&2; }
+error() { printf '%s\n' "${RED}✗ ${*}${RESET}" >&2; }
+die()   { error "$@"; exit 1; }
+
+# --- Progress ----------------------------------------------------------------
+STEP_INDEX=0
+STEP_TOTAL=0
+announce() {
+    STEP_INDEX=$((STEP_INDEX + 1))
+    local pct=$(( STEP_INDEX * 100 / STEP_TOTAL ))
+    printf '\n%s▸ [%d/%d] %3d%%%s %s\n' \
+        "${BOLD}${CYAN}" "$STEP_INDEX" "$STEP_TOTAL" "$pct" "$RESET" "$1"
+}
+
+usage() {
+    cat <<EOF
+${BOLD}enemy${RESET} - Laravel + Vue project scaffolder
+
+${BOLD}Usage:${RESET}
+  enemy new <name> [options]   Create and configure a new project
+  enemy prepare                Update global tooling (Laravel installer, npm globals)
+  enemy update                 Pull the latest scaffold from the remote
+  enemy --help                 Show this help
+  enemy --version              Show version
+
+${BOLD}Options for 'new':${RESET}
+  --no-update                  Skip pulling the remote before scaffolding
+  -h, --help                   Show this help
+
+Repo: https://github.com/ogroves/setup
+EOF
+}
+
+version() {
+    local v="enemy 0.1.0"
+    if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --short HEAD >/dev/null 2>&1; then
+        v="$v ($(git -C "$REPO_ROOT" rev-parse --short HEAD))"
+    fi
+    info "$v"
+}
+
+# --- Preflight ---------------------------------------------------------------
+require_tools() {
+    local missing=()
+    local tool
+    for tool in laravel composer npm php git; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        die "Missing required tool(s): ${missing[*]}"
+    fi
+}
+
+require_fontawesome_token() {
+    # @fortawesome/fontawesome-pro is a licensed package; it needs an auth token
+    # configured in the global ~/.npmrc. Fail early with a clear message.
+    if [ -f "$HOME/.npmrc" ] && grep -qi 'fontawesome' "$HOME/.npmrc"; then
+        return 0
+    fi
+    error "FontAwesome Pro token not found in ~/.npmrc."
+    error "Add your token, e.g.:"
+    error "  @awesome.me:registry=https://npm.fontawesome.com/"
+    error "  @fortawesome:registry=https://npm.fontawesome.com/"
+    error "  //npm.fontawesome.com/:_authToken=YOUR-TOKEN"
+    die   "Then re-run. (Remove @fortawesome/fontawesome-pro from config/dependencies.sh to skip.)"
+}
+
+validate_name() {
+    local name="$1"
+    [ -n "$name" ] || die "Project name is required: enemy new <name>"
+    [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]] \
+        || die "Invalid project name '$name'. Use letters, numbers, '-' and '_', starting with a letter."
+    [ ! -e "$name" ] || die "'$name' already exists in $(pwd)."
+}
+
+# --- Pipeline steps ----------------------------------------------------------
+NAME=""
+
+step_laravel_new() {
+    announce "Creating Laravel project (laravel new)"
+    laravel new "$NAME" "${LARAVEL_NEW_FLAGS[@]}"
+    cd "$NAME"
+}
+
+step_composer_update() {
+    announce "Updating composer dependencies"
+    composer update
+}
+
+step_npm_update() {
+    announce "Updating npm dependencies"
+    npm update
+}
+
+step_npm_deps() {
+    announce "Installing npm packages (${#NPM_DEPS[@]} runtime, ${#NPM_DEV_DEPS[@]} dev)"
+    [ ${#NPM_DEPS[@]} -gt 0 ] && npm i "${NPM_DEPS[@]}"
+    [ ${#NPM_DEV_DEPS[@]} -gt 0 ] && npm i -D "${NPM_DEV_DEPS[@]}"
+}
+
+step_composer_deps() {
+    announce "Installing extra composer packages"
+    composer require "${COMPOSER_DEPS[@]}"
+}
+
+step_install_api() {
+    announce "Installing API scaffolding (php artisan install:api, no migrations)"
+    printf 'no\n' | php artisan install:api
+}
+
+step_copy_stubs() {
+    announce "Applying scaffold stubs"
+    cp -R "$STUBS_DIR/." "./"
+    # Template the project name into the copied stubs.
+    local f
+    while IFS= read -r f; do
+        LC_ALL=C sed -i '' "s/__APP_NAME__/$NAME/g" "$f"
+    done < <(grep -rlF '__APP_NAME__' . --include='*' 2>/dev/null || true)
+}
+
+step_remove_welcome() {
+    announce "Removing default welcome view"
+    rm -f resources/views/welcome.blade.php
+}
+
+step_css_imports() {
+    announce "Adding CSS imports to resources/css/app.css"
+    local css="resources/css/app.css"
+    [ -f "$css" ] || return 0
+    local idx line
+    for (( idx=${#CSS_PREPEND_IMPORTS[@]}-1 ; idx>=0 ; idx-- )); do
+        line="${CSS_PREPEND_IMPORTS[idx]}"
+        if ! grep -qF "$line" "$css"; then
+            printf '%s\n%s' "$line" "$(cat "$css")" > "$css.tmp" && mv "$css.tmp" "$css"
+        fi
+    done
+}
+
+step_gitignore() {
+    announce "Updating .gitignore"
+    local line
+    touch .gitignore
+    for line in "${GITIGNORE_APPEND[@]}"; do
+        grep -qxF "$line" .gitignore || printf '%s\n' "$line" >> .gitignore
+    done
+}
+
+step_finish() {
+    announce "Done"
+    printf '\n%s✓ %s is ready.%s\n\n' "${BOLD}${GREEN}" "$NAME" "$RESET"
+    cat <<EOF
+${BOLD}Next steps:${RESET}
+  cd $NAME
+  valet link $NAME            # (optional) serve at https://$NAME.test
+  valet secure $NAME          # (optional) trust the local certificate
+  # configure your database in .env, then:
+  php artisan migrate         # when you're ready to run migrations
+  composer run dev            # start the dev servers (php, queue, logs, vite)
+EOF
+}
+
+cmd_new() {
+    local no_update=0
+    local args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-update) no_update=1 ;;          # handled by the bootstrapper
+            -f|--filament) die "Filament support (-f) is not implemented yet." ;;
+            -h|--help) usage; exit 0 ;;
+            -*) die "Unknown option: $1" ;;
+            *) args+=("$1") ;;
+        esac
+        shift
+    done
+
+    NAME="${args[0]:-}"
+    validate_name "$NAME"
+
+    require_tools
+    require_fontawesome_token
+
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+
+    local steps=(step_laravel_new step_composer_update step_npm_update step_npm_deps)
+    [ ${#COMPOSER_DEPS[@]} -gt 0 ] && steps+=(step_composer_deps)
+    steps+=(step_install_api step_copy_stubs step_remove_welcome step_css_imports step_gitignore step_finish)
+
+    STEP_TOTAL=${#steps[@]}
+    local s
+    for s in "${steps[@]}"; do
+        "$s"
+    done
+}
+
+cmd_prepare() {
+    command -v composer >/dev/null 2>&1 || die "composer is required."
+    command -v npm >/dev/null 2>&1 || die "npm is required."
+    STEP_TOTAL=2
+    announce "Updating the global Laravel installer"
+    composer global require laravel/installer
+    announce "Updating global npm packages"
+    npm update -g
+    printf '\n%s✓ Global tooling is up to date.%s\n' "${BOLD}${GREEN}" "$RESET"
+}
+
+cmd_update() {
+    if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        info "Scaffold is at $(git -C "$REPO_ROOT" rev-parse --short HEAD) ($(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD))."
+    else
+        warn "Scaffold repo is not a git checkout; nothing to update."
+    fi
+}
+
+main() {
+    local cmd="${1:-}"
+    case "$cmd" in
+        new) shift; cmd_new "$@" ;;
+        prepare) shift; cmd_prepare "$@" ;;
+        update) shift; cmd_update "$@" ;;
+        -h|--help|help|"") usage ;;
+        -v|--version) version ;;
+        *) die "Unknown command: $cmd (try 'enemy --help')" ;;
+    esac
+}
+
+main "$@"
