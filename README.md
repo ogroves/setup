@@ -9,14 +9,23 @@ skeleton, so it keeps working as Laravel releases new versions.
 enemy new my-app
 ```
 
+To scaffold into a directory you've **already cloned from GitHub** (so the
+project's git remote/history is set up before you scaffold), `cd` into it and run
+`enemy init` instead — it leaves your existing `.git` untouched:
+
+```bash
+cd ~/Development/my-app   # cloned from GitHub, currently empty except .git
+enemy init                # scaffolds in place; name defaults to the dir name
+```
+
 ## How it works
 
 `enemy` is a small Bash tool. The command on your PATH is a bootstrapper that
 keeps a local clone of this repo (`github.com/ogroves/setup`) up to date and
 then runs the real script from it — so anything pushed here is picked up on the
-next `enemy new`.
+next `enemy new` or `enemy init`.
 
-For each new project it:
+For each project it scaffolds (both `new` and `init` run the same pipeline):
 
 1. Runs `laravel new <name>` (no starter kit, PHPUnit, SQLite).
 2. Runs `composer update` and `npm update`.
@@ -32,6 +41,22 @@ For each new project it:
    `stubs/boost.json`).
 
 Progress is printed per stage with a percentage.
+
+### `new` vs `init`
+
+- **`enemy new <name>`** creates a fresh `./<name>` directory and runs the
+  pipeline there. `laravel new` initialises a git repo inside it. Use this when
+  you're starting from nothing.
+- **`enemy init [name]`** scaffolds **into the current directory** while
+  preserving its existing `.git`. It runs the pipeline in a throwaway temp
+  directory (so `laravel new` still gets its own clean git repo) and then
+  `rsync -a --exclude='.git'`s the result into the current directory. Your
+  remote, commit history and git config are left completely untouched. The
+  project name defaults to the current directory's name; pass `[name]` to
+  override it. It refuses to run if the current directory already contains a
+  `composer.json` (so it won't scaffold over an existing project), and it
+  requires `rsync` (bundled with macOS). Use this for a repo you've already
+  created/cloned from GitHub — e.g. via Tower — so it stays wired to its remote.
 
 ## Laravel Boost
 
@@ -73,7 +98,8 @@ curl -fsSL https://raw.githubusercontent.com/ogroves/setup/main/bin/enemy-bootst
 
 ## Requirements
 
-- `laravel`, `composer`, `npm`, `php`, `git` on your `PATH`.
+- `laravel`, `composer`, `npm`, `php`, `git` on your `PATH` (plus `rsync` for
+  `enemy init`, which ships with macOS).
 - A **FontAwesome Pro** token in your global `~/.npmrc` (the scaffold installs
   `@fortawesome/fontawesome-pro`). Example:
 
@@ -88,16 +114,19 @@ curl -fsSL https://raw.githubusercontent.com/ogroves/setup/main/bin/enemy-bootst
 
 | Command | Description |
 | --- | --- |
-| `enemy new <name>` | Self-update, then create and configure a project |
+| `enemy new <name>` | Self-update, then create and configure a project in `./<name>` |
 | `enemy new <name> --no-update` | Scaffold without pulling the remote first |
+| `enemy init [name]` | Scaffold into the **current directory**, preserving its `.git` (name defaults to the directory name). Use for a repo you've already cloned from GitHub |
+| `enemy init [name] --no-update` | Same, without pulling the remote first |
 | `enemy prepare` | Update global tooling: the Laravel installer, global npm packages, and the global Laravel Boost MCP registration |
 | `enemy update` | Show/refresh the cached scaffold version |
 | `enemy --help` | Help |
 | `enemy --version` | Version |
 
 Run `enemy prepare` occasionally (or before starting a project) to make sure you
-scaffold against the latest Laravel — `enemy new` uses whatever `laravel new`
-produces, so an out-of-date global installer means an out-of-date project.
+scaffold against the latest Laravel — `enemy new` / `enemy init` use whatever
+`laravel new` produces, so an out-of-date global installer means an out-of-date
+project.
 
 ## Customizing
 
@@ -108,7 +137,7 @@ produces, so an out-of-date global installer means an out-of-date project.
   Laravel/backend guidance is managed by Laravel Boost.
 - **Boost install choices:** edit `stubs/boost.json` (agents, guidelines, skills, mcp).
 
-Push your changes to `main` and they apply on the next `enemy new`.
+Push your changes to `main` and they apply on the next `enemy new` / `enemy init`.
 
 ## Notes
 

@@ -49,15 +49,22 @@ usage() {
 ${BOLD}enemy${RESET} - Laravel + Vue project scaffolder
 
 ${BOLD}Usage:${RESET}
-  enemy new <name> [options]   Create and configure a new project
+  enemy new <name> [options]   Create and configure a new project (in ./<name>)
+  enemy init [name] [options]  Scaffold into the current directory, preserving its .git
   enemy prepare                Update global tooling (Laravel installer, npm globals, Boost MCP)
   enemy update                 Pull the latest scaffold from the remote
   enemy --help                 Show this help
   enemy --version              Show version
 
-${BOLD}Options for 'new':${RESET}
+${BOLD}Options for 'new' / 'init':${RESET}
   --no-update                  Skip pulling the remote before scaffolding
   -h, --help                   Show this help
+
+${BOLD}About 'init':${RESET}
+  Run inside a directory that is already connected to a git remote (e.g. one you
+  cloned from GitHub). It scaffolds the project in a temp directory and then syncs
+  everything except .git into the current directory, so your remote, history and
+  git config are left untouched. Defaults <name> to the current directory's name.
 
 Repo: https://github.com/ogroves/setup
 EOF
@@ -98,15 +105,23 @@ require_fontawesome_token() {
 }
 
 validate_name() {
+    # Usage: validate_name <name> [check_exists]
+    # When check_exists is 0 the "already exists in cwd" guard is skipped (used by
+    # `enemy init`, which scaffolds in a temp dir rather than ./<name>).
     local name="$1"
+    local check_exists="${2:-1}"
     [ -n "$name" ] || die "Project name is required: enemy new <name>"
     [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]] \
         || die "Invalid project name '$name'. Use letters, numbers, '-' and '_', starting with a letter."
-    [ ! -e "$name" ] || die "'$name' already exists in $(pwd)."
+    if [ "$check_exists" -eq 1 ]; then
+        [ ! -e "$name" ] || die "'$name' already exists in $(pwd)."
+    fi
 }
 
 # --- Pipeline steps ----------------------------------------------------------
 NAME=""
+ARGS=()
+SCAFFOLD_MODE="new"
 
 step_laravel_new() {
     announce "Creating Laravel project (laravel new)"
@@ -192,6 +207,9 @@ step_gitignore() {
 
 step_finish() {
     announce "Done"
+    # In `init` mode this runs inside the temp dir; cmd_init prints the real
+    # next-steps message (with the correct target path) after the rsync.
+    [ "${SCAFFOLD_MODE:-new}" = "init" ] && return 0
     printf '\n%s✓ %s is ready.%s\n\n' "${BOLD}${GREEN}" "$NAME" "$RESET"
     cat <<EOF
 ${BOLD}Next steps:${RESET}
@@ -204,35 +222,10 @@ ${BOLD}Next steps:${RESET}
 EOF
 }
 
-cmd_new() {
-    local no_update=0
-    local args=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --no-update) no_update=1 ;;          # handled by the bootstrapper
-            -f|--filament) die "Filament support (-f) is not implemented yet." ;;
-            -h|--help) usage; exit 0 ;;
-            -*) die "Unknown option: $1" ;;
-            *) args+=("$1") ;;
-        esac
-        shift
-    done
-
-    NAME="${args[0]:-}"
-    validate_name "$NAME"
-
-    require_tools
-    require_fontawesome_token
-
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
-
-    # If this stack includes Laravel Boost, make sure the global MCP server has
-    # been registered (via `enemy prepare`); offer to do it now if not.
-    if [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && printf '%s\n' "${COMPOSER_DEV_DEPS[@]}" | grep -q '^laravel/boost$'; then
-        require_prepared
-    fi
-
+# Runs the full scaffold pipeline in the current working directory. Assumes the
+# caller has already validated the name, loaded config, and (if needed) prepared
+# Boost. step_laravel_new creates ./$NAME and cd's into it.
+run_pipeline() {
     local steps=(step_laravel_new step_composer_update step_npm_update step_npm_deps)
     [ ${#COMPOSER_DEPS[@]} -gt 0 ] && steps+=(step_composer_deps)
     [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && steps+=(step_composer_dev_deps)
@@ -247,6 +240,100 @@ cmd_new() {
     for s in "${steps[@]}"; do
         "$s"
     done
+}
+
+# Shared preflight for `new` and `init`: tool checks, config load, and the
+# optional Boost prepare prompt. Expects NAME to be set and validated.
+prepare_scaffold() {
+    require_tools
+    require_fontawesome_token
+
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+
+    # If this stack includes Laravel Boost, make sure the global MCP server has
+    # been registered (via `enemy prepare`); offer to do it now if not.
+    if [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && printf '%s\n' "${COMPOSER_DEV_DEPS[@]}" | grep -q '^laravel/boost$'; then
+        require_prepared
+    fi
+}
+
+# Parses the option/positional args shared by `new` and `init` into the global
+# ARGS array. --no-update is consumed by the bootstrapper, so it's a no-op here.
+parse_scaffold_args() {
+    ARGS=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-update) : ;;                     # handled by the bootstrapper
+            -f|--filament) die "Filament support (-f) is not implemented yet." ;;
+            -h|--help) usage; exit 0 ;;
+            -*) die "Unknown option: $1" ;;
+            *) ARGS+=("$1") ;;
+        esac
+        shift
+    done
+}
+
+cmd_new() {
+    parse_scaffold_args "$@"
+
+    NAME="${ARGS[0]:-}"
+    validate_name "$NAME"
+
+    prepare_scaffold
+    run_pipeline
+}
+
+cmd_init() {
+    parse_scaffold_args "$@"
+
+    local target; target="$(pwd)"
+
+    # Default the project name to the current directory's name.
+    NAME="${ARGS[0]:-$(basename "$target")}"
+    # Skip the "already exists" check: we scaffold in a temp dir, not ./$NAME.
+    validate_name "$NAME" 0
+
+    # Guard against scaffolding on top of an existing project.
+    [ ! -e "composer.json" ] || die "This directory already contains a composer.json; refusing to scaffold over it."
+
+    command -v rsync >/dev/null 2>&1 || die "rsync is required for 'enemy init'."
+
+    prepare_scaffold
+
+    # Scaffold in a throwaway temp dir so `laravel new` gets its own clean git
+    # repo, then sync everything except .git back into the current directory.
+    SCAFFOLD_MODE=init
+    local tmp; tmp="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "cd '$target'; rm -rf '$tmp'" EXIT
+
+    # Run the pipeline in the temp dir. Not in a subshell, so the progress
+    # counters (STEP_TOTAL/STEP_INDEX) remain visible to the sync step below.
+    cd "$tmp"
+    run_pipeline
+    cd "$target"
+
+    # One extra step beyond the pipeline: the sync. Bump the total so the
+    # progress percentage stays sane.
+    STEP_TOTAL=$((STEP_TOTAL + 1))
+    announce "Syncing scaffold into $target (preserving existing .git)"
+    rsync -a --exclude='.git' "$tmp/$NAME/" "$target/"
+
+    rm -rf "$tmp"
+    trap - EXIT
+
+    printf '\n%s✓ %s scaffolded into %s (your .git was left untouched).%s\n\n' \
+        "${BOLD}${GREEN}" "$NAME" "$target" "$RESET"
+    cat <<EOF
+${BOLD}Next steps:${RESET}
+  valet link $NAME            # (optional) serve at https://$NAME.test
+  valet secure $NAME          # (optional) trust the local certificate
+  # configure your database in .env, then:
+  php artisan migrate         # when you're ready to run migrations
+  composer run dev            # start the dev servers (php, queue, logs, vite)
+  git add -A && git commit    # commit the scaffold to your connected repo
+EOF
 }
 
 cmd_prepare() {
@@ -352,6 +439,7 @@ main() {
     local cmd="${1:-}"
     case "$cmd" in
         new) shift; cmd_new "$@" ;;
+        init) shift; cmd_init "$@" ;;
         prepare) shift; cmd_prepare "$@" ;;
         update) shift; cmd_update "$@" ;;
         -h|--help|help|"") usage ;;
