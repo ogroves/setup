@@ -1,0 +1,8 @@
+{
+    "agents": ["cursor", "claude_code"],
+    "guidelines": true,
+    "skills": true,
+    "mcp": false,
+    "packages": [],
+    "herd_mcp": false
+}

@@ -2,11 +2,17 @@
 
 Guidance for AI agents and contributors working in this project.
 
-## Stack
+> **Note:** Laravel Boost manages the Laravel/backend AI guidelines (installed via
+> `laravel/boost` and injected into this file / the agent's rules by `boost:install`).
+> This hand-maintained file focuses on the **frontend stack**, which Boost does not
+> cover. Prefer Boost's guidelines and its `search-docs` MCP tool for anything
+> Laravel-, Sanctum-, Pest-, or PHP-specific.
 
-- **Backend:** Laravel (API via Laravel Sanctum). SPA fallback route renders `resources/views/app.blade.php`.
+## Stack (frontend)
+
 - **Frontend:** Vue 3 (`vue.esm-bundler`), Vue Router, Pinia. Built with Vite + `@tailwindcss/vite` (Tailwind v4).
 - **Icons:** FontAwesome Pro (imported in `resources/css/app.css`).
+- **Backend (for context):** Laravel API via Sanctum; the SPA fallback route renders `resources/views/app.blade.php`. See Boost's guidelines for backend conventions.
 
 ## Frontend structure (`resources/js/`)
 
@@ -23,11 +29,11 @@ Guidance for AI agents and contributors working in this project.
 
 `@components`, `@directives`, `@layouts`, `@pages`, `@sections`, `@stores` → the matching `resources/js/*` folders. Prefer aliases over deep relative paths.
 
-## Conventions
+## Conventions (frontend)
 
 - Formatting is enforced by Prettier (`.prettierrc`): tabs, single quotes, no semicolons, Tailwind class sorting. Run Prettier before committing.
 - Routing is client-side: Laravel serves the SPA shell for all non-API routes; add pages via `router.js`.
-- API routes live in `routes/api.php` and use `auth:sanctum` where appropriate.
+- Prefer import aliases over deep relative paths (see above).
 - Do not run migrations blindly; databases are connected per-environment.
 
 ## Common commands

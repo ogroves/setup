@@ -50,7 +50,7 @@ ${BOLD}enemy${RESET} - Laravel + Vue project scaffolder
 
 ${BOLD}Usage:${RESET}
   enemy new <name> [options]   Create and configure a new project
-  enemy prepare                Update global tooling (Laravel installer, npm globals)
+  enemy prepare                Update global tooling (Laravel installer, npm globals, Boost MCP)
   enemy update                 Pull the latest scaffold from the remote
   enemy --help                 Show this help
   enemy --version              Show version
@@ -135,6 +135,19 @@ step_composer_deps() {
     composer require "${COMPOSER_DEPS[@]}"
 }
 
+step_composer_dev_deps() {
+    announce "Installing dev composer packages"
+    composer require --dev "${COMPOSER_DEV_DEPS[@]}"
+}
+
+step_boost_install() {
+    # Generate Laravel-aware AI guidelines + skills for this project. MCP is
+    # registered globally (see `enemy prepare`), so we omit --mcp here and don't
+    # write a per-project MCP config. Choices come from the pre-seeded boost.json.
+    announce "Installing Laravel Boost guidelines (php artisan boost:install)"
+    php artisan boost:install --guidelines --skills --no-interaction
+}
+
 step_install_api() {
     announce "Installing API scaffolding (php artisan install:api, no migrations)"
     printf 'no\n' | php artisan install:api
@@ -214,9 +227,20 @@ cmd_new() {
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 
+    # If this stack includes Laravel Boost, make sure the global MCP server has
+    # been registered (via `enemy prepare`); offer to do it now if not.
+    if [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && printf '%s\n' "${COMPOSER_DEV_DEPS[@]}" | grep -q '^laravel/boost$'; then
+        require_prepared
+    fi
+
     local steps=(step_laravel_new step_composer_update step_npm_update step_npm_deps)
     [ ${#COMPOSER_DEPS[@]} -gt 0 ] && steps+=(step_composer_deps)
-    steps+=(step_install_api step_copy_stubs step_remove_welcome step_css_imports step_gitignore step_finish)
+    [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && steps+=(step_composer_dev_deps)
+    steps+=(step_install_api step_copy_stubs step_remove_welcome step_css_imports step_gitignore)
+    # boost:install runs after stubs are copied (needs boost.json) and after the
+    # dev deps step (needs laravel/boost installed).
+    [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && steps+=(step_boost_install)
+    steps+=(step_finish)
 
     STEP_TOTAL=${#steps[@]}
     local s
@@ -228,12 +252,92 @@ cmd_new() {
 cmd_prepare() {
     command -v composer >/dev/null 2>&1 || die "composer is required."
     command -v npm >/dev/null 2>&1 || die "npm is required."
-    STEP_TOTAL=2
+    STEP_TOTAL=3
     announce "Updating the global Laravel installer"
     composer global require laravel/installer
     announce "Updating global npm packages"
     npm update -g
+    announce "Registering Laravel Boost MCP server globally (~/.cursor/mcp.json)"
+    register_global_boost_mcp
     printf '\n%s✓ Global tooling is up to date.%s\n' "${BOLD}${GREEN}" "$RESET"
+}
+
+# Returns success if the global Laravel Boost MCP server has been registered
+# (the durable side-effect of `enemy prepare`).
+boost_mcp_registered() {
+    local cfg="$HOME/.cursor/mcp.json"
+    [ -f "$cfg" ] || return 1
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.mcpServers | has("laravel-boost")' "$cfg" >/dev/null 2>&1
+    else
+        grep -q '"laravel-boost"' "$cfg"
+    fi
+}
+
+# Called before scaffolding when Boost is part of the stack. If `enemy prepare`
+# hasn't registered the global MCP server yet, offer to run it now (interactive
+# terminals) or warn and continue (non-interactive/CI).
+require_prepared() {
+    boost_mcp_registered && return 0
+
+    warn "It looks like 'enemy prepare' hasn't been run (the global Laravel Boost"
+    warn "MCP server isn't registered in ~/.cursor/mcp.json yet)."
+
+    if [ ! -t 0 ]; then
+        warn "Continuing without it; run 'enemy prepare' later to enable Boost's MCP tools."
+        return 0
+    fi
+
+    printf '%s' "Run 'enemy prepare' now? [Y/n] " >&2
+    local reply
+    read -r reply
+    case "$reply" in
+        ""|[Yy]|[Yy][Ee][Ss])
+            cmd_prepare
+            # Reset progress counters so the scaffold's own progress starts fresh.
+            STEP_INDEX=0
+            STEP_TOTAL=0
+            ;;
+        *)
+            warn "Skipping. Run 'enemy prepare' later to enable Boost's MCP tools."
+            ;;
+    esac
+}
+
+
+# every project's Boost install can skip writing per-project MCP config. The
+# `php artisan boost:mcp` command resolves relative to the workspace, so this one
+# global entry works for any Laravel project that has laravel/boost installed.
+register_global_boost_mcp() {
+    local cfg="$HOME/.cursor/mcp.json"
+    mkdir -p "$HOME/.cursor"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        if [ -f "$cfg" ]; then
+            warn "jq not found; leaving existing $cfg untouched."
+            warn "Add the 'laravel-boost' server manually (command: php, args: [\"artisan\", \"boost:mcp\"])."
+            return 0
+        fi
+        cat > "$cfg" <<'JSON'
+{
+    "mcpServers": {
+        "laravel-boost": {
+            "command": "php",
+            "args": ["artisan", "boost:mcp"]
+        }
+    }
+}
+JSON
+        info "  Wrote $cfg"
+        return 0
+    fi
+
+    [ -f "$cfg" ] || printf '{}\n' > "$cfg"
+    local tmp
+    tmp="$(mktemp)"
+    jq '.mcpServers = (.mcpServers // {}) | .mcpServers["laravel-boost"] = {"command": "php", "args": ["artisan", "boost:mcp"]}' \
+        "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+    info "  Registered 'laravel-boost' in $cfg"
 }
 
 cmd_update() {
