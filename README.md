@@ -135,7 +135,14 @@ project.
   where the project name should be substituted).
 - **Per-project agent guidance:** edit `stubs/AGENTS.md` (frontend conventions).
   Laravel/backend guidance is managed by Laravel Boost.
-- **Boost install choices:** edit `stubs/boost.json` (agents, guidelines, skills, mcp).
+- **Boost install choices:** edit `stubs/boost.json`. Note the value types Boost
+  expects, since a wrong type makes `boost:install` fail with a `TypeError`:
+  - `agents` — array of agent ids, e.g. `["cursor", "claude_code"]`
+  - `guidelines` — bool
+  - `skills` — **array** of skill ids (not a bool), e.g.
+    `["laravel-best-practices", "tailwindcss-development"]`
+  - `mcp` — bool (kept `false`; the MCP server is registered globally by
+    `enemy prepare`)
 
 Push your changes to `main` and they apply on the next `enemy new` / `enemy init`.
 
