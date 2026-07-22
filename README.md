@@ -36,7 +36,9 @@ For each project it scaffolds (both `new` and `init` run the same pipeline):
 6. Removes the default `welcome.blade.php`.
 7. Idempotently adds the FontAwesome import to `resources/css/app.css` and the
    `.DS_Store` rules to `.gitignore`.
-8. Runs `php artisan boost:install --guidelines --skills --no-interaction` to
+8. Sets `APP_URL` to `http://<name>.test` in `.env` and `.env.example` (matching
+   a Valet/Herd `.test` domain rather than Laravel's default `http://localhost`).
+9. Runs `php artisan boost:install --guidelines --skills --no-interaction` to
    generate Laravel-aware AI guidelines and skills (choices are pre-seeded via
    `stubs/boost.json`).
 

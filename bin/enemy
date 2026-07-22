@@ -196,6 +196,20 @@ step_css_imports() {
     done
 }
 
+step_env() {
+    announce "Setting APP_URL to http://$NAME.test"
+    local url="http://$NAME.test"
+    local f
+    for f in .env .env.example; do
+        [ -f "$f" ] || continue
+        if grep -q '^APP_URL=' "$f"; then
+            LC_ALL=C sed -i '' "s|^APP_URL=.*|APP_URL=$url|" "$f"
+        else
+            printf 'APP_URL=%s\n' "$url" >> "$f"
+        fi
+    done
+}
+
 step_gitignore() {
     announce "Updating .gitignore"
     local line
@@ -229,7 +243,7 @@ run_pipeline() {
     local steps=(step_laravel_new step_composer_update step_npm_update step_npm_deps)
     [ ${#COMPOSER_DEPS[@]} -gt 0 ] && steps+=(step_composer_deps)
     [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && steps+=(step_composer_dev_deps)
-    steps+=(step_install_api step_copy_stubs step_remove_welcome step_css_imports step_gitignore)
+    steps+=(step_install_api step_copy_stubs step_remove_welcome step_css_imports step_gitignore step_env)
     # boost:install runs after stubs are copied (needs boost.json) and after the
     # dev deps step (needs laravel/boost installed).
     [ ${#COMPOSER_DEV_DEPS[@]} -gt 0 ] && steps+=(step_boost_install)
